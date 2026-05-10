@@ -1,0 +1,99 @@
+cities:
+  Houston:
+    lat: 29.7604
+    lon: -95.3698
+  Phoenix:
+    lat: 33.4484
+    lon: -112.0740
+  Miami:
+    lat: 25.7617
+    lon: -80.1918
+  Chicago:
+    lat: 41.8781
+    lon: -87.6298
+  Los Angeles:
+    lat: 34.0522
+    lon: -118.2437
+  Seattle:
+    lat: 47.6062
+    lon: -122.3321
+
+scenarios:
+  - ssp245
+  - ssp370
+
+years:
+  start: 2015
+  end: 2060
+
+# CMIP6 variable names used from ClimateSet
+variables:
+  - tas       # surface air temperature (K)
+  - pr        # precipitation flux (kg m-2 s-1)
+  - hurs      # near-surface relative humidity (%)
+  - sfcWind   # near-surface wind speed (m s-1)
+
+# ClimateSet dataset config
+dataset:
+  hf_repo: "climateset/causalpaca"
+  # Single CMIP6 model to keep data volume manageable
+  cmip6_model: "NorESM2-LM"
+  patch_size: 5         # grid cells (H x W) extracted around each city centre
+  # If True, generates synthetic climate data instead of downloading from HuggingFace
+  # Useful for testing the full pipeline without large downloads
+  use_synthetic: false
+
+model:
+  encoder: climax        # "climax" or "cnn"
+  climax_model_id: "microsoft/ClimaX"
+  climax_checkpoint_file: "5.625deg.ckpt"   # coarser resolution matches our city-scale patches
+  embed_dim: 512
+  depth: 6               # transformer blocks in ClimaX encoder
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.1
+  risk_head_hidden:
+    - 256
+    - 128
+
+training:
+  batch_size: 32
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  val_split: 0.2
+  seed: 42
+
+# Synthetic label thresholds (documented as proxies — not real risk indices)
+labels:
+  heat:
+    baseline_celsius: 30.0   # risk = 0.5 at this temperature
+    scale: 10.0              # sigmoid steepness in °C
+  flood:
+    normalization_mm_day: 20.0  # mean + 2*std above this → risk = 1
+  wildfire:
+    heat_baseline_celsius: 20.0
+    heat_range_celsius: 20.0
+    precip_dry_threshold_mm_day: 5.0
+    heat_weight: 0.6
+    dry_weight: 0.4
+  drought:
+    temp_baseline_celsius: 15.0
+    temp_range_celsius: 25.0
+    precip_normalization_mm_day: 10.0
+
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  artifacts: "artifacts"
+  checkpoint: "artifacts/best_model.pt"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  predict_url: "http://localhost:8000/predict"   # used by LLM tools
+
+llm:
+  model: "claude-sonnet-4-6"
+  max_tokens: 2048
+  temperature: 0.3
