@@ -1,5 +1,5 @@
 """
-Claude tool definitions for the agentic advisor.
+Gemini tool definitions for the agentic advisor.
 
 Three tools:
   get_risk_scores     — run the climate model for one (city, scenario, year)
@@ -9,58 +9,66 @@ Three tools:
 
 from typing import Any, Dict
 
+from google.genai import types
+
 from src.data.cities import CITIES, SSP_SCENARIOS
 
-# ── Tool schemas (passed to the Claude API as `tools`) ───────────────────────
+# ── Tool schemas (passed to the Gemini API) ───────────────────────────────────
+
+_city_list = str(list(CITIES))
+
+_get_risk_scores = types.FunctionDeclaration(
+    name="get_risk_scores",
+    description=(
+        "Run the ClimateGrid model to retrieve climate disaster risk scores "
+        "for a specific city, emission scenario, and future year. "
+        "Returns four risk scores in [0, 1]: heat, flood, wildfire, drought."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "city":     types.Schema(type=types.Type.STRING,  description=f"City name. One of: {_city_list}"),
+            "scenario": types.Schema(type=types.Type.STRING,  description="SSP scenario: 'ssp245' (moderate) or 'ssp370' (high emissions)."),
+            "year":     types.Schema(type=types.Type.INTEGER, description="Future year between 2015 and 2060."),
+        },
+        required=["city", "scenario", "year"],
+    ),
+)
+
+_compare_scenarios = types.FunctionDeclaration(
+    name="compare_scenarios",
+    description=(
+        "Compare climate risk under SSP2-4.5 (moderate emissions) vs SSP3-7.0 "
+        "(high emissions, fragmented world) for the same city and year. "
+        "Returns risk scores for both scenarios side by side."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "city": types.Schema(type=types.Type.STRING,  description=f"City name. One of: {_city_list}"),
+            "year": types.Schema(type=types.Type.INTEGER, description="Future year between 2015 and 2060."),
+        },
+        required=["city", "year"],
+    ),
+)
+
+_get_city_profile = types.FunctionDeclaration(
+    name="get_city_profile",
+    description=(
+        "Return geographic and climate context for a city: coordinates, "
+        "primary known climate hazards, and relevant infrastructure notes."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "city": types.Schema(type=types.Type.STRING, description=f"City name. One of: {_city_list}"),
+        },
+        required=["city"],
+    ),
+)
 
 TOOL_DEFINITIONS = [
-    {
-        "name": "get_risk_scores",
-        "description": (
-            "Run the ClimateGrid model to retrieve climate disaster risk scores "
-            "for a specific city, emission scenario, and future year. "
-            "Returns four risk scores in [0, 1]: heat, flood, wildfire, drought."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "city":     {"type": "string", "description": f"City name. One of: {list(CITIES)}"},
-                "scenario": {"type": "string", "description": "SSP scenario: 'ssp245' (moderate) or 'ssp370' (high emissions)."},
-                "year":     {"type": "integer", "description": "Future year between 2015 and 2060."},
-            },
-            "required": ["city", "scenario", "year"],
-        },
-    },
-    {
-        "name": "compare_scenarios",
-        "description": (
-            "Compare climate risk under SSP2-4.5 (moderate emissions) vs SSP3-7.0 "
-            "(high emissions, fragmented world) for the same city and year. "
-            "Returns risk scores for both scenarios side by side."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string", "description": f"City name. One of: {list(CITIES)}"},
-                "year": {"type": "integer", "description": "Future year between 2015 and 2060."},
-            },
-            "required": ["city", "year"],
-        },
-    },
-    {
-        "name": "get_city_profile",
-        "description": (
-            "Return geographic and climate context for a city: coordinates, "
-            "primary known climate hazards, and relevant infrastructure notes."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string", "description": f"City name. One of: {list(CITIES)}"},
-            },
-            "required": ["city"],
-        },
-    },
+    types.Tool(function_declarations=[_get_risk_scores, _compare_scenarios, _get_city_profile])
 ]
 
 # ── Static city profiles ──────────────────────────────────────────────────────
@@ -103,27 +111,22 @@ _CITY_PROFILES: Dict[str, Dict[str, Any]] = {
 
 def execute_tool(tool_name: str, tool_input: Dict[str, Any], predictor) -> Dict[str, Any]:
     """
-    Dispatch a tool call from the Claude agent to the appropriate function.
+    Dispatch a tool call from the Gemini agent to the appropriate function.
 
-    Args:
-        tool_name:  name of the tool being called
-        tool_input: dict of arguments from Claude
-        predictor:  Predictor instance (for model calls)
-
-    Returns:
-        dict — the tool result that will be sent back to Claude
+    Returns a plain Python dict with only JSON-serializable native types
+    (protobuf Struct requires no numpy floats).
     """
     if tool_name == "get_risk_scores":
         scores = predictor.predict(
             city=tool_input["city"],
             scenario=tool_input["scenario"],
-            year=tool_input["year"],
+            year=int(tool_input["year"]),
         )
         return {
-            "city":     tool_input["city"],
-            "scenario": tool_input["scenario"],
-            "year":     tool_input["year"],
-            "risk_scores": scores,
+            "city":        tool_input["city"],
+            "scenario":    tool_input["scenario"],
+            "year":        int(tool_input["year"]),
+            "risk_scores": {k: float(v) for k, v in scores.items()},
         }
 
     elif tool_name == "compare_scenarios":
@@ -132,14 +135,14 @@ def execute_tool(tool_name: str, tool_input: Dict[str, Any], predictor) -> Dict[
             scores = predictor.predict(
                 city=tool_input["city"],
                 scenario=scenario,
-                year=tool_input["year"],
+                year=int(tool_input["year"]),
             )
-            results[scenario] = scores
+            results[scenario] = {k: float(v) for k, v in scores.items()}
         return {
-            "city":    tool_input["city"],
-            "year":    tool_input["year"],
-            "ssp245":  results.get("ssp245", {}),
-            "ssp370":  results.get("ssp370", {}),
+            "city":   tool_input["city"],
+            "year":   int(tool_input["year"]),
+            "ssp245": results.get("ssp245", {}),
+            "ssp370": results.get("ssp370", {}),
         }
 
     elif tool_name == "get_city_profile":

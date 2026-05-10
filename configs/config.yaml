@@ -94,6 +94,6 @@ api:
   predict_url: "http://localhost:8000/predict"   # used by LLM tools
 
 llm:
-  model: "claude-sonnet-4-6"
+  model: "gemini-3.1-flash-lite"   # free tier — get key at aistudio.google.com
   max_tokens: 2048
   temperature: 0.3

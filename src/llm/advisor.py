@@ -1,19 +1,19 @@
 """
-Agentic LLM advisor.
+Agentic LLM advisor — powered by Google Gemini (free tier).
 
-Runs an agentic Claude loop: Claude decides which tools to call,
+Runs an agentic Gemini loop: the model decides which tools to call,
 in what order, and writes a structured mitigation brief.
 
-The advisor NEVER answers without calling get_risk_scores first —
-this is enforced by the system prompt.
+Free tier: gemini-1.5-flash — 1,500 requests/day, 15 RPM.
+Get a key at https://aistudio.google.com (no credit card required).
 """
 
-import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-import anthropic
+from google import genai
+from google.genai import types
 
 from src.llm.tools import TOOL_DEFINITIONS, execute_tool
 
@@ -56,20 +56,21 @@ Keep language accessible to a non-technical city administrator. Be specific and 
 class Advisor:
     def __init__(self, config: dict):
         self.config = config
-        self._client: anthropic.Anthropic | None = None
-        self.model  = config["llm"]["model"]
-        self.max_tokens = config["llm"]["max_tokens"]
+        self._client: genai.Client | None = None
+        self.model_name  = config["llm"]["model"]
+        self.max_tokens  = config["llm"]["max_tokens"]
+        self.temperature = config["llm"].get("temperature", 0.3)
 
     @property
-    def client(self) -> anthropic.Anthropic:
+    def client(self) -> genai.Client:
         if self._client is None:
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            api_key = os.environ.get("GOOGLE_API_KEY")
             if not api_key:
                 raise RuntimeError(
-                    "ANTHROPIC_API_KEY is not set. "
-                    "Copy .env.example to .env and add your key."
+                    "GOOGLE_API_KEY is not set. "
+                    "Get a free key at https://aistudio.google.com and add it to .env as GOOGLE_API_KEY=..."
                 )
-            self._client = anthropic.Anthropic(api_key=api_key)
+            self._client = genai.Client(api_key=api_key)
         return self._client
 
     def run(
@@ -100,7 +101,15 @@ class Advisor:
         else:
             user_content += "\nPlease provide a full climate risk assessment and mitigation brief."
 
-        messages: List[Dict] = [{"role": "user", "content": user_content}]
+        chat_config = types.GenerateContentConfig(
+            tools=TOOL_DEFINITIONS,
+            system_instruction=SYSTEM_PROMPT,
+            max_output_tokens=self.max_tokens,
+            temperature=self.temperature,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+        chat = self.client.chats.create(model=self.model_name, config=chat_config)
+        response = chat.send_message(user_content)
 
         # ── Agentic tool-use loop ─────────────────────────────────────────────
         final_text: str = ""
@@ -108,54 +117,50 @@ class Advisor:
         max_iterations = 10
 
         for _ in range(max_iterations):
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                system=SYSTEM_PROMPT,
-                tools=TOOL_DEFINITIONS,
-                messages=messages,
-            )
-
-            # Append assistant message
-            messages.append({"role": "assistant", "content": response.content})
-
-            if response.stop_reason == "end_turn":
-                # Extract the final text block
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        final_text = block.text
+            if not response.candidates or not response.candidates[0].content.parts:
                 break
 
-            if response.stop_reason == "tool_use":
-                tool_results = []
-                for block in response.content:
-                    if block.type != "tool_use":
-                        continue
+            parts = response.candidates[0].content.parts
 
-                    logger.info("Tool call: %s(%s)", block.name, json.dumps(block.input))
-                    result = execute_tool(block.name, block.input, predictor)
-                    logger.info("Tool result: %s", json.dumps(result))
+            # Collect function calls from this response turn
+            function_calls = [
+                part.function_call
+                for part in parts
+                if part.function_call and part.function_call.name
+            ]
 
-                    # Track the most recent risk scores for the response envelope
-                    if block.name == "get_risk_scores" and "risk_scores" in result:
-                        last_risk_scores = result["risk_scores"]
-                    elif block.name == "compare_scenarios":
-                        # Use the requested scenario's scores
-                        last_risk_scores = result.get(scenario, {})
+            if not function_calls:
+                # No tool calls — extract final text
+                final_text = "".join(p.text for p in parts if p.text)
+                break
 
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result),
-                    })
+            # Execute each tool and build function_response parts
+            fn_response_parts = []
+            for fc in function_calls:
+                tool_input = dict(fc.args)
+                logger.info("Tool call: %s(%s)", fc.name, tool_input)
+                result = execute_tool(fc.name, tool_input, predictor)
+                logger.info("Tool result: %s", result)
 
-                messages.append({"role": "user", "content": tool_results})
+                if fc.name == "get_risk_scores" and "risk_scores" in result:
+                    last_risk_scores = result["risk_scores"]
+                elif fc.name == "compare_scenarios":
+                    last_risk_scores = result.get(scenario, {})
+
+                fn_response_parts.append(
+                    types.Part.from_function_response(
+                        name=fc.name,
+                        response=result,
+                    )
+                )
+
+            response = chat.send_message(fn_response_parts)
 
         if not final_text:
             logger.warning("Advisor loop ended without a final text response.")
             final_text = "Unable to generate mitigation brief. Please try again."
 
-        # If tool was never called or scores weren't captured, run predict directly
+        # Fallback: run predict directly if no tool was ever called
         if last_risk_scores is None:
             last_risk_scores = predictor.predict(city, scenario, year)
 

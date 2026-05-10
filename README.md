@@ -11,11 +11,12 @@ Given a city, a future year, and a climate emission scenario — ClimateGrid pre
 City planners make infrastructure decisions today that need to remain effective for the next 30–50 years. ClimateGrid bridges the gap between raw climate model outputs and actionable planning guidance.
 
 A city administrator selects:
-- **City** — Houston, Phoenix, Miami, Chicago, Los Angeles, or Seattle
+- **City** — Houston, Phoenix, Miami, Chicago, Los Angeles, or Seattle (click on the map or use the dropdown)
 - **Scenario** — SSP2-4.5 (moderate emissions) or SSP3-7.0 (high emissions)
 - **Year** — any year from 2025 to 2060
 
 And receives:
+- An interactive US map with colour-coded risk markers for the selected city
 - Four hazard risk scores (heat, flood, wildfire, drought) on a 0–1 scale
 - An AI-written mitigation brief with short, medium, and long-term recommended actions
 
@@ -35,9 +36,9 @@ ClimateSet (HuggingFace)
   FastAPI                POST /predict  (direct inference)
                          POST /advise   (LLM agentic loop)
         ↓
-  Claude Sonnet          Agentic tool-use loop → mitigation brief
+  Gemini 3.1 Flash-Lite  Agentic tool-use loop → mitigation brief
         ↓
-  Gradio dashboard       City planner UI
+  Gradio dashboard       Interactive map + bar chart + AI brief
 ```
 
 **Data:** [ClimateSet](https://huggingface.co/datasets/climateset/causalpaca) — CMIP6 climate model outputs (NorESM2-LM), variables: surface temperature (`tas`), precipitation (`pr`), relative humidity (`hurs`), wind speed (`sfcWind`), scenarios SSP2-4.5 and SSP3-7.0.
@@ -46,7 +47,7 @@ ClimateSet (HuggingFace)
 
 **Labels:** Synthetic risk proxies derived from raw climate variables (documented limitation — real labels would require observational damage data).
 
-**LLM:** Claude Sonnet via the Anthropic API. The advisor agent autonomously calls `get_risk_scores`, `compare_scenarios`, and `get_city_profile` tools before writing any response.
+**LLM:** Google Gemini 3.1 Flash-Lite via the Gemini API (free tier — no credit card required). The advisor agent autonomously calls `get_risk_scores`, `compare_scenarios`, and `get_city_profile` tools before writing any response.
 
 ---
 
@@ -83,10 +84,10 @@ climategrid/
 │   │   ├── schemas.py         # Pydantic request/response models
 │   │   └── main.py            # FastAPI: /predict, /advise, /health
 │   ├── llm/
-│   │   ├── tools.py           # Claude tool definitions and execution
+│   │   ├── tools.py           # Gemini tool definitions and execution
 │   │   └── advisor.py         # agentic loop: tools → mitigation brief
 │   └── dashboard/
-│       └── app.py             # Gradio UI
+│       └── app.py             # Gradio UI with interactive Leaflet map
 └── tests/
     ├── test_data.py
     ├── test_model.py
@@ -95,29 +96,108 @@ climategrid/
 
 ---
 
-## Setup
+## Getting started (first time on a new machine)
 
-**Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/)
+### 1. Prerequisites
+
+| Tool | Version | Install |
+|---|---|---|
+| Python | 3.12 or 3.13 | [python.org](https://www.python.org/downloads/) |
+| uv | any recent | `curl -LsSf https://astral.sh/uv/install.sh \| sh` (Mac/Linux) or see [docs](https://docs.astral.sh/uv/getting-started/installation/) |
+| Git | any | already installed on most systems |
+
+Verify before continuing:
+```bash
+python --version   # should say 3.12.x or 3.13.x
+uv --version       # should say uv 0.x.x
+```
+
+### 2. Clone and install
 
 ```bash
 git clone <repo-url>
-cd climategrid
+cd climategrid-1
 
-# Install all dependencies
+# Install all Python dependencies into a local virtual environment
 uv sync
-
-# Add your Anthropic API key
-cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY=...
 ```
+
+`uv sync` reads `pyproject.toml` and installs every dependency automatically. No need to activate a venv — all `uv run` commands use it automatically.
+
+### 3. Get a free Google API key
+
+The AI advisor uses Google Gemini 3.1 Flash-Lite, which is **free** (no credit card):
+
+1. Go to [https://aistudio.google.com](https://aistudio.google.com) and sign in with a Google account
+2. Click **"Get API key"** → **"Create API key"**
+3. Copy the key
+
+### 4. Create your `.env` file
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in your key:
+```
+GOOGLE_API_KEY=your_key_here
+```
+
+> Each teammate needs their own `.env` file with their own key. The `.env` file is gitignored — never commit it.
+
+### 5. Train the model
+
+You need a trained checkpoint before the API can run. Use synthetic data (fast, no download):
+
+```bash
+uv run python scripts/run_pipeline.py --synthetic --epochs 10
+```
+
+This takes about 1–2 minutes and saves a checkpoint to `artifacts/best_model.pt`.
+
+> You only need to do this once per machine. After that, skip straight to step 6.
+
+### 6. Run the app
+
+Open **two terminals** in the project folder:
+
+**Terminal 1 — API server:**
+```bash
+uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+**Terminal 2 — Gradio dashboard:**
+```bash
+uv run python src/dashboard/app.py
+```
+
+Open [http://localhost:7860](http://localhost:7860) in a browser. You should see the interactive map with all 6 cities.
 
 ---
 
-## Running the pipeline
+## Using the dashboard
 
-### Quick start — synthetic data (no download required)
+1. **Select a city** — click any marker on the map, or use the City dropdown
+2. **Choose a scenario** — SSP2-4.5 (moderate) or SSP3-7.0 (high emissions)
+3. **Set a year** — drag the slider to any year between 2025 and 2060
+4. **Ask a question** (optional) — e.g. *"What should we prioritise for flood resilience?"*
+5. **Click Analyse** — the map marker updates colour based on risk level, a bar chart appears, and the AI writes a mitigation brief below
 
-Use this to verify the full pipeline before committing to the HuggingFace download.
+**Map colour legend:**
+
+| Colour | Average risk |
+|---|---|
+| Red | High (≥ 0.65) |
+| Orange | Medium (0.40–0.65) |
+| Yellow | Low (0.20–0.40) |
+| Green | Minimal (< 0.20) |
+| Grey | Not yet analysed |
+
+---
+
+## Running the pipeline (reference)
+
+### Quick start — synthetic data
 
 ```bash
 uv run python scripts/run_pipeline.py --synthetic --epochs 10
@@ -129,7 +209,7 @@ uv run python scripts/run_pipeline.py --synthetic --epochs 10
 uv run python scripts/run_pipeline.py
 ```
 
-This downloads only the required city grid cells from `climateset/causalpaca` (NorESM2-LM, SSP2-4.5 and SSP3-7.0). Add `--epochs 50` to run the full training.
+Downloads city grid cells from `climateset/causalpaca` on HuggingFace (NorESM2-LM, SSP2-4.5 and SSP3-7.0). Add `--epochs 50` for full training.
 
 ### Pipeline flags
 
@@ -137,25 +217,19 @@ This downloads only the required city grid cells from `climateset/causalpaca` (N
 |---|---|
 | `--synthetic` | Generate synthetic climate data instead of downloading |
 | `--epochs N` | Override number of training epochs |
-| `--skip-download` | Skip download step (use already-downloaded data) |
-| `--skip-preprocess` | Skip preprocessing step |
+| `--skip-download` | Skip download, use already-downloaded data |
+| `--skip-preprocess` | Skip preprocessing, use already-processed tensors |
 
 ---
 
-## Running the API
-
-```bash
-uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### Endpoints
+## API reference
 
 **`GET /health`**
 ```json
 {"status": "ok"}
 ```
 
-**`POST /predict`**
+**`POST /predict`** — direct model inference
 ```bash
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
@@ -175,7 +249,7 @@ curl -X POST http://localhost:8000/predict \
 }
 ```
 
-**`POST /advise`**
+**`POST /advise`** — AI mitigation brief
 ```bash
 curl -X POST http://localhost:8000/advise \
   -H "Content-Type: application/json" \
@@ -185,23 +259,83 @@ Returns `risk_scores` + `mitigation_brief` (AI-written structured plan).
 
 ---
 
-## Running the dashboard
-
-With the API server running in one terminal:
-
-```bash
-uv run python src/dashboard/app.py
-```
-
-Open [http://localhost:7860](http://localhost:7860) in a browser.
-
----
-
 ## Running tests
 
 ```bash
 uv run pytest tests/ -q
 ```
+
+Tests mock the model and the Gemini API, so no checkpoint or API key is needed to run them.
+
+---
+
+## Making changes
+
+### Changing the LLM model
+
+Edit `configs/config.yaml`:
+```yaml
+llm:
+  model: "gemini-3.1-flash-lite"   # change this to any Gemini model ID
+```
+
+No code changes needed — the model name is read from config at startup.
+
+### Adding a new city
+
+1. Add coordinates to `configs/config.yaml` under `cities:`
+2. Add a city profile to `src/llm/tools.py` in `_CITY_PROFILES`
+3. Re-run the pipeline (`--synthetic` is fine for testing)
+
+### Changing training settings
+
+Edit `configs/config.yaml` under `training:` (batch size, epochs, learning rate). Then re-run:
+```bash
+uv run python scripts/run_pipeline.py --synthetic --skip-download --skip-preprocess --epochs 20
+```
+
+### Changing the risk head (MLP architecture)
+
+Edit `model.risk_head_hidden` in `configs/config.yaml` — it's a list of hidden layer sizes:
+```yaml
+model:
+  risk_head_hidden:
+    - 256
+    - 128
+```
+
+### Switching encoder (ClimaX → CNN)
+
+Edit `configs/config.yaml`:
+```yaml
+model:
+  encoder: cnn   # "climax" or "cnn"
+```
+
+---
+
+## Troubleshooting
+
+**`ModuleNotFoundError: No module named 'src'`**
+Run commands with `uv run` from the project root (`climategrid-1/`), not from inside `src/`.
+
+**`FileNotFoundError: artifacts/best_model.pt`**
+The model has not been trained yet. Run the pipeline first:
+```bash
+uv run python scripts/run_pipeline.py --synthetic --epochs 10
+```
+
+**`Cannot reach the ClimateGrid API`** (in dashboard)
+The API server is not running. Open a second terminal and run:
+```bash
+uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+**`GOOGLE_API_KEY is not set`**
+Your `.env` file is missing or the key is wrong. Check that `.env` exists in the project root and contains `GOOGLE_API_KEY=...`. Get a free key at [aistudio.google.com](https://aistudio.google.com).
+
+**Map not loading / city markers not appearing**
+The map tiles and Leaflet load from a CDN. Make sure you have internet access when running the dashboard.
 
 ---
 
